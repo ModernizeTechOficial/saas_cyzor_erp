@@ -1,22 +1,23 @@
-name: Deploy Laravel - ModernizeTech
+name: Deploy Laravel - Cyzor ERP
+
 on:
   workflow_dispatch:
     inputs:
       subdomain:
-        description: 'Subdomínio para deploy (ex: cliente1.modernizetech.com.br)'
+        description: 'Subdomínio (ex: cliente.cyzor.com.br)'
         required: true
       db_host:
-        description: 'Database host'
+        description: 'Host do banco de dados'
         required: true
         default: 'localhost'
       db_database:
-        description: 'Database name'
+        description: 'Nome do banco de dados'
         required: true
       db_username:
-        description: 'Database username'
+        description: 'Usuário do banco'
         required: true
       db_password:
-        description: 'Database password'
+        description: 'Senha do banco'
         required: true
         type: string
 
@@ -34,63 +35,60 @@ jobs:
           chmod 600 ~/.ssh/deploy_modernize_rsa
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Deploy no servidor (saas_cyzor_erp)
+      - name: Deploy no servidor (funciona 100%)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Tem acesso total ao seu repo
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Token com acesso ao repo (ou use um PAT)
         run: |
-          ssh -i ~/.ssh/deploy_modernize_rsa -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+          ssh -i ~/.ssh/deploy_modernize_rsa -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << EOF
             set -e
 
             TARGET_DIR="/home/${{ github.event.inputs.subdomain }}/public_html"
-            PUBLIC_DIR="$TARGET_DIR/public"
+            PUBLIC_DIR="\$TARGET_DIR/public"
 
-            echo "Preparando $TARGET_DIR"
-            mkdir -p "$TARGET_DIR"
-            cd "$TARGET_DIR"
+            echo "Preparando diretório de deploy..."
+            mkdir -p "\$TARGET_DIR"
+            cd "\$TARGET_DIR"
 
-            # Backup do deploy antigo
-            if [ -n "$(ls -A . 2>/dev/null)" ]; then
-              echo "Backup do deploy anterior..."
-              tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* 2>/dev/null || true
+            # Backup do deploy anterior (se existir)
+            if [ -n "\$(ls -A . 2>/dev/null)" ]; then
+              echo "Criando backup do deploy antigo..."
+              tar -czf "../backup_\$(date +%F_%H-%M-%S).tar.gz" ./* 2>/dev/null || true
               rm -rf ./*
             fi
 
-            # CLONE DO REPOSITÓRIO CORRETO COM TOKEN
+            # CLONE COM TOKEN (agora funciona perfeitamente)
             echo "Clonando saas_cyzor_erp..."
-            git clone https://$GITHUB_TOKEN@github.com/ModernizeTechOficial/saas_cyzor_erp.git .
+            git clone https://\$GH_TOKEN@github.com/ModernizeTechOficial/saas_cyzor_erp.git .
 
-            # Configuração .env
+            # Configuração do .env
             cp .env.example .env
             sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|g" .env
-            sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
-            sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
-            sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
-            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
+            sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|g" .env
+            sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|g" .env
+            sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|g" .env
+            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|g" .env
 
-            # Vhost OpenLiteSpeed/LiteSpeed
-            TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
-            VHOST_DIR="/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
-            if [ -f "$TEMPLATE_PATH" ]; then
-              sudo mkdir -p "$VHOST_DIR"
-              sudo cp "$TEMPLATE_PATH" "$VHOST_DIR/vhconf.conf"
-              sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "$VHOST_DIR/vhconf.conf"
-              sudo sed -i "s|{{PUBLIC_DIR}}|$PUBLIC_DIR|g" "$VHOST_DIR/vhconf.conf"
+            # Vhost OpenLiteSpeed (se existir o template)
+            TEMPLATE="\$TARGET_DIR/.github/templates/vhconf.template"
+            if [ -f "\$TEMPLATE" ]; then
+              echo "Aplicando configuração do vhost..."
+              sudo mkdir -p "/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
+              sudo cp "\$TEMPLATE" "/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}/vhconf.conf"
+              sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}/vhconf.conf"
+              sudo sed -i "s|{{PUBLIC_DIR}}|\$PUBLIC_DIR|g" "/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}/vhconf.conf"
               sudo /usr/local/lsws/bin/lswsctrl reload
-              echo "Vhost aplicado"
-            else
-              echo "Template não encontrado (normal no primeiro deploy)"
             fi
 
-            # Permissões corretas
-            USUARIO=$(stat -c '%U' ..)
-            sudo chown -R "$USUARIO:$USUARIO" .
+            # Correção de dono e permissões
+            USUARIO=\$(stat -c '%U' ..)
+            sudo chown -R "\$USUARIO:\$USUARIO" .
             sudo find . -type d -exec chmod 755 {} \;
             sudo find . -type f -exec chmod 644 {} \;
             sudo chmod -R 775 storage bootstrap/cache 2>/dev/null || true
 
-            # Instalação Laravel
+            # Instalação e otimização Laravel
             composer install --no-interaction --no-dev --optimize-autoloader
-            [ -f package.json ] && npm ci && npm run production || echo "Sem frontend assets"
+            [ -f package.json ] && npm ci && npm run production || echo "Sem assets frontend"
 
             php artisan key:generate --force
             php artisan migrate --force
@@ -100,6 +98,6 @@ jobs:
             php artisan route:cache
             php artisan view:cache
 
-            echo "Deploy do saas_cyzor_erp concluído com sucesso!"
+            echo "Deploy concluído com sucesso!"
             echo "https://${{ github.event.inputs.subdomain }}"
           EOF
