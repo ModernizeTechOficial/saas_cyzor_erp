@@ -22,7 +22,7 @@ on:
       repository_url:
         description: 'Repository SSH URL'
         required: true
-        default: 'git@github.com:ModernizeTechOficial/piloto2.git'
+        default: 'git@github.com:ModernizeTechOficial/saas_cyzor_erp.git'
       sql_file_path:
         description: 'Caminho do SQL dump dentro do repositório'
         required: false
