@@ -1,10 +1,9 @@
 name: Deploy Laravel - ModernizeTech
-
 on:
   workflow_dispatch:
     inputs:
       subdomain:
-        description: 'Subdomain for deployment'
+        description: 'Subdomínio para deploy (ex: cliente1.modernizetech.com.br)'
         required: true
       db_host:
         description: 'Database host'
@@ -17,58 +16,50 @@ on:
         description: 'Database username'
         required: true
       db_password:
-        description: 'Database password (will be masked)'
+        description: 'Database password'
         required: true
         type: string
-      repository_url:
-        description: 'Repository HTTPS URL (ex: https://github.com/ModernizeTechOficial/piloto2.git)'
-        required: true
-        default: 'https://github.com/ModernizeTechOficial/piloto2.git'
-      db_action:
-        description: 'Database action'
-        required: false
-        default: 'auto'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout workflow repository
+      - name: Checkout do workflow
         uses: actions/checkout@v4
 
-      - name: Setup SSH key (apenas para acessar o servidor)
+      - name: Configurar chave SSH para o servidor
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/deploy_modernize_rsa
           chmod 600 ~/.ssh/deploy_modernize_rsa
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Deploy no servidor (usando HTTPS + token)
+      - name: Deploy no servidor (saas_cyzor_erp)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # Tem acesso total ao seu repo
         run: |
-          ssh -i ~/.ssh/deploy_modernize_rsa -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << EOF
+          ssh -i ~/.ssh/deploy_modernize_rsa -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
             set -e
 
             TARGET_DIR="/home/${{ github.event.inputs.subdomain }}/public_html"
-            PUBLIC_DIR="\$TARGET_DIR/public"
+            PUBLIC_DIR="$TARGET_DIR/public"
 
-            echo "Criando diretório e backup (se existir)"
-            mkdir -p "\$TARGET_DIR"
-            cd "\$TARGET_DIR"
+            echo "Preparando $TARGET_DIR"
+            mkdir -p "$TARGET_DIR"
+            cd "$TARGET_DIR"
 
-            if [ -d "\$TARGET_DIR" ] && [ "\$(ls -A "\$TARGET_DIR" 2>/dev/null)" ]; then
-              echo "Fazendo backup do deploy antigo..."
-              tar -czf "../backup_\$(date +%F_%H-%M-%S).tar.gz" ./* 2>/dev/null || echo "Backup ignorado"
+            # Backup do deploy antigo
+            if [ -n "$(ls -A . 2>/dev/null)" ]; then
+              echo "Backup do deploy anterior..."
+              tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* 2>/dev/null || true
               rm -rf ./*
             fi
 
-            echo "Clonando repositório via HTTPS (com token)"
-            # Usa o GITHUB_TOKEN do workflow (tem acesso total ao repo) ou um PAT customizado
-            git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/ModernizeTechOficial/piloto2.git .
+            # CLONE DO REPOSITÓRIO CORRETO COM TOKEN
+            echo "Clonando saas_cyzor_erp..."
+            git clone https://$GITHUB_TOKEN@github.com/ModernizeTechOficial/saas_cyzor_erp.git .
 
-            # Se quiser usar um PAT personalizado em vez do GITHUB_TOKEN padrão, troque por:
-            # git clone https://${{ secrets.MY_GITHUB_PAT }}@github.com/ModernizeTechOficial/piloto2.git .
-
-            echo "Configurando .env"
+            # Configuração .env
             cp .env.example .env
             sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|g" .env
             sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
@@ -76,31 +67,31 @@ jobs:
             sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
             sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
 
-            # Template do vhost (OpenLiteSpeed/LiteSpeed)
-            TEMPLATE_PATH="\$TARGET_DIR/.github/templates/vhconf.template"
+            # Vhost OpenLiteSpeed/LiteSpeed
+            TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
             VHOST_DIR="/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
-            if [ -f "\$TEMPLATE_PATH" ]; then
-              echo "Aplicando template do vhost..."
-              sudo mkdir -p "\$VHOST_DIR"
-              sudo cp "\$TEMPLATE_PATH" "\$VHOST_DIR/vhconf.conf"
-              sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "\$VHOST_DIR/vhconf.conf"
-              sudo sed -i "s|{{PUBLIC_DIR}}|\$PUBLIC_DIR|g" "\$VHOST_DIR/vhconf.conf"
+            if [ -f "$TEMPLATE_PATH" ]; then
+              sudo mkdir -p "$VHOST_DIR"
+              sudo cp "$TEMPLATE_PATH" "$VHOST_DIR/vhconf.conf"
+              sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "$VHOST_DIR/vhconf.conf"
+              sudo sed -i "s|{{PUBLIC_DIR}}|$PUBLIC_DIR|g" "$VHOST_DIR/vhconf.conf"
               sudo /usr/local/lsws/bin/lswsctrl reload
-              echo "Template do vhost aplicado com sucesso"
+              echo "Vhost aplicado"
             else
-              echo "Template não encontrado em \$TEMPLATE_PATH"
+              echo "Template não encontrado (normal no primeiro deploy)"
             fi
 
-            # Permissões
-            USUARIO=\$(stat -c '%U' ..)
-            sudo chown -R "\$USUARIO:\$USUARIO" .
+            # Permissões corretas
+            USUARIO=$(stat -c '%U' ..)
+            sudo chown -R "$USUARIO:$USUARIO" .
             sudo find . -type d -exec chmod 755 {} \;
             sudo find . -type f -exec chmod 644 {} \;
             sudo chmod -R 775 storage bootstrap/cache 2>/dev/null || true
 
-            # Laravel
+            # Instalação Laravel
             composer install --no-interaction --no-dev --optimize-autoloader
-            [ -f package.json ] && npm ci && npm run prod || echo "Sem frontend"
+            [ -f package.json ] && npm ci && npm run production || echo "Sem frontend assets"
+
             php artisan key:generate --force
             php artisan migrate --force
             php artisan db:seed --force || echo "Sem seeders"
@@ -109,5 +100,6 @@ jobs:
             php artisan route:cache
             php artisan view:cache
 
-            echo "Deploy concluído com sucesso em https://${{ github.event.inputs.subdomain }}!"
+            echo "Deploy do saas_cyzor_erp concluído com sucesso!"
+            echo "https://${{ github.event.inputs.subdomain }}"
           EOF
