@@ -1,0 +1,120 @@
+name: Deploy Laravel - ModernizeTech
+
+on:
+  workflow_dispatch:
+    inputs:
+      subdomain:
+        description: 'Subdomain for deployment'
+        required: true
+      db_host:
+        description: 'Database host'
+        required: true
+        default: 'localhost'
+      db_database:
+        description: 'Database name'
+        required: true
+      db_username:
+        description: 'Database username'
+        required: true
+      db_password:
+        description: 'Database password'
+        required: true
+      repository_url:
+        description: 'Repository SSH URL'
+        required: true
+        default: 'git@github.com:ModernizeTechOficial/piloto2.git'
+      db_action:
+        description: 'Database action (compatibilidade)'
+        required: false
+        default: 'auto'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout workflow
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/deploy_modernize_rsa
+          chmod 600 ~/.ssh/deploy_modernize_rsa
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy Real
+        run: |
+          export TERM=xterm
+          ssh -i ~/.ssh/deploy_modernize_rsa -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+            set -e
+            export TERM=xterm
+
+            TARGET_DIR=/home/${{ github.event.inputs.subdomain }}/public_html
+            PUBLIC_DIR="$TARGET_DIR/public"
+
+            mkdir -p "$TARGET_DIR"
+            cd "$TARGET_DIR"
+
+            if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
+              echo "Criando backup..."
+              tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* || echo "Backup falhou"
+              rm -rf ./*
+            fi
+
+            chmod 600 ~/.ssh/deploy_modernize_rsa
+            export GIT_SSH_COMMAND='ssh -i ~/.ssh/deploy_modernize_rsa -o StrictHostKeyChecking=no'
+            git clone ${{ github.event.inputs.repository_url }} .
+
+            if [ ! -f .env.example ]; then
+              echo "Erro: .env.example não encontrado!"
+              exit 1
+            fi
+
+            cp .env.example .env
+            sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
+            sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
+            sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
+            sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
+            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
+
+            # Aplicar template do vhost
+            TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
+            VHOST_DIR="/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
+            if [ -f "$TEMPLATE_PATH" ]; then
+                echo "🧩 Aplicando template do vhost..."
+                sudo mkdir -p "$VHOST_DIR"
+                sudo cp "$TEMPLATE_PATH" "$VHOST_DIR/vhconf.conf"
+
+                sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "$VHOST_DIR/vhconf.conf"
+                sudo sed -i "s|{{PUBLIC_DIR}}|$PUBLIC_DIR|g" "$VHOST_DIR/vhconf.conf"
+
+                sudo /usr/local/lsws/bin/lswsctrl reload
+                echo "✅ Template do vhost aplicado"
+            else
+                echo "⚠️ Template do vhost não encontrado em $TEMPLATE_PATH"
+            fi
+
+            USUARIO=$(stat -c '%U' ..)
+            sudo chown -R "$USUARIO:$USUARIO" .
+            sudo find . -type d -exec chmod 755 {} \;
+            sudo find . -type f -exec chmod 644 {} \;
+            sudo chmod -R 775 storage bootstrap/cache || true
+
+            composer install --no-interaction --optimize-autoloader
+
+            if [ -f package.json ]; then
+              npm ci || true
+            fi
+
+            php artisan key:generate --force
+            php artisan migrate --force
+            php artisan db:seed --force || echo "Sem seeders, continuando..."
+            php artisan storage:link
+
+            rm -rf "$TARGET_DIR/cache/*" || true
+
+            sudo /usr/local/lsws/bin/lswsctrl reload
+            echo "✅ Deploy concluído com sucesso!"
+          EOF
