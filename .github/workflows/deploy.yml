@@ -23,10 +23,10 @@ on:
         description: 'Repository SSH URL'
         required: true
         default: 'git@github.com:ModernizeTechOficial/piloto2.git'
-      db_action:
-        description: 'Database action (compatibilidade)'
+      sql_file_path:
+        description: 'Caminho do SQL dump dentro do repositório'
         required: false
-        default: 'auto'
+        default: 'database/dump.sql'
 
 jobs:
   deploy:
@@ -52,8 +52,6 @@ jobs:
             export TERM=xterm
 
             TARGET_DIR=/home/${{ github.event.inputs.subdomain }}/public_html
-            PUBLIC_DIR="$TARGET_DIR/public"
-
             mkdir -p "$TARGET_DIR"
             cd "$TARGET_DIR"
 
@@ -89,7 +87,7 @@ jobs:
                 sudo mkdir -p "$VHOST_DIR"
                 sudo cp "$TEMPLATE_PATH" "$VHOST_DIR/vhconf.conf"
                 sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "$VHOST_DIR/vhconf.conf"
-                sudo sed -i "s|{{PUBLIC_DIR}}|$PUBLIC_DIR|g" "$VHOST_DIR/vhconf.conf"
+                sudo sed -i "s|{{PUBLIC_DIR}}|$TARGET_DIR/public|g" "$VHOST_DIR/vhconf.conf"
                 sudo /usr/local/lsws/bin/lswsctrl reload
                 echo "✅ Template do vhost aplicado"
             else
@@ -105,19 +103,28 @@ jobs:
 
             # Instalação de dependências
             composer install --no-interaction --optimize-autoloader
-
             if [ -f package.json ]; then
               npm ci || true
             fi
 
-            # Configurações Laravel
+            # Configurações Laravel (sem migrate/seed)
             php artisan key:generate --force
-            php artisan migrate --force
-            php artisan db:seed --force || echo "Sem seeders, continuando..."
             php artisan storage:link
 
-            rm -rf "$TARGET_DIR/cache/*" || true
+            # Importar dump SQL do repositório
+            SQL_FILE="$TARGET_DIR/${{ github.event.inputs.sql_file_path }}"
+            if [ -f "$SQL_FILE" ]; then
+              echo "🔹 Importando dump SQL $SQL_FILE..."
+              mysql -h "${{ github.event.inputs.db_host }}" \
+                    -u "${{ github.event.inputs.db_username }}" \
+                    -p"${{ github.event.inputs.db_password }}" \
+                    "${{ github.event.inputs.db_database }}" < "$SQL_FILE"
+              echo "✅ Dump SQL importado com sucesso"
+            else
+              echo "⚠️ Arquivo SQL não encontrado: $SQL_FILE"
+            fi
 
+            rm -rf "$TARGET_DIR/cache/*" || true
             sudo /usr/local/lsws/bin/lswsctrl reload
             echo "✅ Deploy concluído com sucesso!"
           EOF
