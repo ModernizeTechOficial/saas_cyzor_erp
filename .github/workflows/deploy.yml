@@ -27,7 +27,9 @@ on:
         description: 'Caminho do SQL dump dentro do repositório'
         required: false
         default: 'database/dump.sql'
-
+      purchase_id: 
+        description: 'ID da compra' 
+        required: false
 jobs:
   deploy:
     runs-on: ubuntu-latest
