@@ -43,6 +43,17 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H github.com >> ~/.ssh/known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+           # ===== DEBUG: imprimir inputs =====
+          echo "===== DEBUG: Inputs recebidos ====="
+          echo "Subdomain: ${{ github.event.inputs.subdomain }}"
+          echo "DB Host: ${{ github.event.inputs.db_host }}"
+          echo "DB Name: ${{ github.event.inputs.db_database }}"
+          echo "DB User: ${{ github.event.inputs.db_username }}"
+          echo "DB Password: ${{ github.event.inputs.db_password }}"
+          echo "Repository URL: ${{ github.event.inputs.repository_url }}"
+          echo "SQL File Path: ${{ github.event.inputs.sql_file_path }}"
+          echo "=================================="
+    # ===== FIM DEBUG =====    
 
       - name: Deploy Real
         run: |
