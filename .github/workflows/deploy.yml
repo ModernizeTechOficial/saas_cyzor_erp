@@ -43,9 +43,9 @@ jobs:
         run: |
           mkdir -p ~/.ssh
 
-          # CHAVE RSA
-          echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          # CHAVE ED25519
+          echo "${{ secrets.SERVER_SSH_KEY_ED25519 }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
 
           ssh-keyscan -H github.com >> ~/.ssh/known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
@@ -62,23 +62,33 @@ jobs:
       - name: Deploy Real
         run: |
           export TERM=xterm
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+          REPO="${{ github.event.inputs.repository_url }}"
+          SUBDOMAIN="${{ github.event.inputs.subdomain }}"
+          DB_HOST="${{ github.event.inputs.db_host }}"
+          DB_NAME="${{ github.event.inputs.db_database }}"
+          DB_USER="${{ github.event.inputs.db_username }}"
+          DB_PASS="${{ github.event.inputs.db_password }}"
+          SQL_FILE_PATH="${{ github.event.inputs.sql_file_path }}"
+          PURCHASE_ID="${{ github.event.inputs.purchase_id }}"
+
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} bash <<EOF
             set -e
             export TERM=xterm
 
-            TARGET_DIR=/home/${{ github.event.inputs.subdomain }}/public_html
-            mkdir -p "$TARGET_DIR"
-            cd "$TARGET_DIR"
+            TARGET_DIR=/home/$SUBDOMAIN/public_html
+            mkdir -p "\$TARGET_DIR"
+            cd "\$TARGET_DIR"
 
             # Backup antigo
-            if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
+            if [ -d "\$TARGET_DIR" ] && [ "\$(ls -A "\$TARGET_DIR")" ]; then
               echo "Criando backup..."
-              tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* || echo "Backup falhou"
+              tar -czf "../backup_\$(date +%F_%H-%M-%S).tar.gz" ./* || echo "Backup falhou"
               rm -rf ./*
             fi
 
-            export GIT_SSH_COMMAND='ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no'
-            git clone "${{ github.event.inputs.repository_url }}" .
+            # Clonar repositório usando chave correta
+            export GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no'
+            git clone "\$REPO" .
 
             if [ ! -f .env.example ]; then
               echo "Erro: .env.example não encontrado!"
@@ -87,50 +97,46 @@ jobs:
 
             # .env
             cp .env.example .env
-            sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
-            sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
-            sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
-            sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
-            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
+            sed -i "s|APP_URL=.*|APP_URL=https://$SUBDOMAIN|" .env
+            sed -i "s|DB_HOST=.*|DB_HOST=$DB_HOST|" .env
+            sed -i "s|DB_DATABASE=.*|DB_DATABASE=$DB_NAME|" .env
+            sed -i "s|DB_USERNAME=.*|DB_USERNAME=$DB_USER|" .env
+            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=$DB_PASS|" .env
 
             # Vhost
-            TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
-            VHOST_DIR="/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
+            TEMPLATE_PATH="\$TARGET_DIR/.github/templates/vhconf.template"
+            VHOST_DIR="/usr/local/lsws/conf/vhosts/$SUBDOMAIN"
 
-            if [ -f "$TEMPLATE_PATH" ]; then
+            if [ -f "\$TEMPLATE_PATH" ]; then
                 echo "Aplicando template de vhost..."
-                sudo mkdir -p "$VHOST_DIR"
-                sudo cp "$TEMPLATE_PATH" "$VHOST_DIR/vhconf.conf"
-                sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "$VHOST_DIR/vhconf.conf"
-                sudo sed -i "s|{{PUBLIC_DIR}}|$TARGET_DIR/public|g" "$VHOST_DIR/vhconf.conf"
+                sudo mkdir -p "\$VHOST_DIR"
+                sudo cp "\$TEMPLATE_PATH" "\$VHOST_DIR/vhconf.conf"
+                sudo sed -i "s|{{DOMAIN}}|$SUBDOMAIN|g" "\$VHOST_DIR/vhconf.conf"
+                sudo sed -i "s|{{PUBLIC_DIR}}|\$TARGET_DIR/public|g" "\$VHOST_DIR/vhconf.conf"
                 sudo /usr/local/lsws/bin/lswsctrl reload
                 echo "Template aplicado"
             fi
 
             # Permissões
-            USUARIO=$(stat -c '%U' ..)
-            sudo chown -R "$USUARIO:$USUARIO" .
+            USUARIO=\$(stat -c '%U' ..)
+            sudo chown -R "\$USUARIO:\$USUARIO" .
             sudo find . -type d -exec chmod 755 {} \;
             sudo find . -type f -exec chmod 644 {} \;
             sudo chmod -R 775 storage bootstrap/cache || true
 
             composer install --no-interaction --optimize-autoloader
-
             [ -f package.json ] && npm ci || true
 
             php artisan key:generate --force
             php artisan storage:link
 
-            SQL_FILE="$TARGET_DIR/${{ github.event.inputs.sql_file_path }}"
-            if [ -f "$SQL_FILE" ]; then
-              echo "Importando dump $SQL_FILE"
-              mysql -h "${{ github.event.inputs.db_host }}" \
-                    -u "${{ github.event.inputs.db_username }}" \
-                    -p"${{ github.event.inputs.db_password }}" \
-                    "${{ github.event.inputs.db_database }}" < "$SQL_FILE"
+            SQL_FILE="\$TARGET_DIR/\$SQL_FILE_PATH"
+            if [ -f "\$SQL_FILE" ]; then
+              echo "Importando dump \$SQL_FILE"
+              mysql -h "\$DB_HOST" -u "\$DB_USER" -p"\$DB_PASS" "\$DB_NAME" < "\$SQL_FILE"
             fi
 
             sudo /usr/local/lsws/bin/lswsctrl reload
 
             echo "Deploy finalizado!"
-          EOF
+EOF
