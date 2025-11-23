@@ -3,26 +3,36 @@ name: Deploy Laravel - ModernizeTech
 on:
   workflow_dispatch:
     inputs:
+      purchase_id:
+        description: 'ID da compra no sistema'
+        required: true
+
       subdomain:
         description: 'Subdomain for deployment'
         required: true
+
       db_host:
         description: 'Database host'
         required: true
         default: 'localhost'
+
       db_database:
         description: 'Database name'
         required: true
+
       db_username:
         description: 'Database username'
         required: true
+
       db_password:
         description: 'Database password'
         required: true
+
       repository_url:
         description: 'Repository SSH URL'
         required: true
         default: 'git@github.com:ModernizeTechOficial/saas_cyzor_erp.git'
+
       sql_file_path:
         description: 'Caminho do SQL dump dentro do repositório'
         required: false
@@ -43,17 +53,16 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H github.com >> ~/.ssh/known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
-           # ===== DEBUG: imprimir inputs =====
+
           echo "===== DEBUG: Inputs recebidos ====="
+          echo "Purchase ID: ${{ github.event.inputs.purchase_id }}"
           echo "Subdomain: ${{ github.event.inputs.subdomain }}"
           echo "DB Host: ${{ github.event.inputs.db_host }}"
           echo "DB Name: ${{ github.event.inputs.db_database }}"
           echo "DB User: ${{ github.event.inputs.db_username }}"
-          echo "DB Password: ${{ github.event.inputs.db_password }}"
-          echo "Repository URL: ${{ github.event.inputs.repository_url }}"
-          echo "SQL File Path: ${{ github.event.inputs.sql_file_path }}"
+          echo "Repo: ${{ github.event.inputs.repository_url }}"
+          echo "SQL: ${{ github.event.inputs.sql_file_path }}"
           echo "=================================="
-    # ===== FIM DEBUG =====    
 
       - name: Deploy Real
         run: |
@@ -62,18 +71,21 @@ jobs:
             set -e
             export TERM=xterm
 
+            # Variável do purchase_id acessível no servidor
+            PURCHASE_ID="${{ github.event.inputs.purchase_id }}"
+
             TARGET_DIR=/home/${{ github.event.inputs.subdomain }}/public_html
             mkdir -p "$TARGET_DIR"
             cd "$TARGET_DIR"
 
-            # Backup se existir conteúdo
+            echo "📦 Deploy para purchase_id: $PURCHASE_ID"
+
             if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
               echo "Criando backup..."
               tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* || echo "Backup falhou"
               rm -rf ./*
             fi
 
-            # Clonar repositório privado usando a chave criada
             export GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no'
             git clone "${{ github.event.inputs.repository_url }}" .
 
@@ -82,7 +94,6 @@ jobs:
               exit 1
             fi
 
-            # Configurar .env
             cp .env.example .env
             sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
             sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
@@ -90,52 +101,43 @@ jobs:
             sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
             sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
 
-            # Aplicar template do vhost
             TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
             VHOST_DIR="/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
+
             if [ -f "$TEMPLATE_PATH" ]; then
-                echo "🧩 Aplicando template do vhost..."
+                echo "🔧 Aplicando template vhost..."
                 sudo mkdir -p "$VHOST_DIR"
                 sudo cp "$TEMPLATE_PATH" "$VHOST_DIR/vhconf.conf"
                 sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "$VHOST_DIR/vhconf.conf"
                 sudo sed -i "s|{{PUBLIC_DIR}}|$TARGET_DIR/public|g" "$VHOST_DIR/vhconf.conf"
                 sudo /usr/local/lsws/bin/lswsctrl reload
-                echo "✅ Template do vhost aplicado"
-            else
-                echo "⚠️ Template do vhost não encontrado em $TEMPLATE_PATH"
             fi
 
-            # Permissões
             USUARIO=$(stat -c '%U' ..)
             sudo chown -R "$USUARIO:$USUARIO" .
             sudo find . -type d -exec chmod 755 {} \;
             sudo find . -type f -exec chmod 644 {} \;
             sudo chmod -R 775 storage bootstrap/cache || true
 
-            # Instalação de dependências
             composer install --no-interaction --optimize-autoloader
+
             if [ -f package.json ]; then
               npm ci || true
             fi
 
-            # Configurações Laravel (sem migrate/seed)
             php artisan key:generate --force
             php artisan storage:link
 
-            # Importar dump SQL do repositório
             SQL_FILE="$TARGET_DIR/${{ github.event.inputs.sql_file_path }}"
             if [ -f "$SQL_FILE" ]; then
-              echo "🔹 Importando dump SQL $SQL_FILE..."
               mysql -h "${{ github.event.inputs.db_host }}" \
                     -u "${{ github.event.inputs.db_username }}" \
                     -p"${{ github.event.inputs.db_password }}" \
                     "${{ github.event.inputs.db_database }}" < "$SQL_FILE"
-              echo "✅ Dump SQL importado com sucesso"
-            else
-              echo "⚠️ Arquivo SQL não encontrado: $SQL_FILE"
             fi
 
             rm -rf "$TARGET_DIR/cache/*" || true
             sudo /usr/local/lsws/bin/lswsctrl reload
-            echo "✅ Deploy concluído com sucesso!"
+
+            echo "🚀 Deploy finalizado! Purchase ID: $PURCHASE_ID"
           EOF
