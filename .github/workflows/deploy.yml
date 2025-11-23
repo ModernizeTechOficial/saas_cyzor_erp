@@ -43,7 +43,7 @@ jobs:
       - name: Notificar API sobre deploy (antes de tudo)
         run: |
           echo "✅ Enviando purchase_id para a API antes do deploy..."
-          curl -X POST "https://seusite.com/api/webhook-deploy" \
+          curl -X POST "https://cyzor.com.br/api/webhook-deploy" \
             -H "Content-Type: application/json" \
             -d "{\"purchase_id\": \"${{ github.event.inputs.purchase_id }}\", \"subdomain\": \"${{ github.event.inputs.subdomain }}\"}"
 
