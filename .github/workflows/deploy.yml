@@ -55,7 +55,7 @@ jobs:
           echo "DB Password: ${{ github.event.inputs.db_password }}"
           echo "Repository URL: ${{ github.event.inputs.repository_url }}"
           echo "SQL File Path: ${{ github.event.inputs.sql_file_path }}"
-          echo "Purchase ID: ${{ github.event.inputs.purchase_id }}
+          echo "Purchase ID: ${{ github.event.inputs.purchase_id }}"
           echo "=================================="
     # ===== FIM DEBUG =====    
 
