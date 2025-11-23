@@ -27,10 +27,11 @@ on:
         description: 'Caminho do SQL dump dentro do repositório'
         required: false
         default: 'database/dump.sql'
-      purchase_id: 
-        description: 'ID da compra' 
+      purchase_id:
+        description: 'ID da compra'
         required: false
-        default: 'não encontrado ou nao fornecido'
+        default: 'não encontrado'
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -39,6 +40,13 @@ jobs:
       - name: Checkout workflow
         uses: actions/checkout@v4
 
+      - name: Notificar API sobre deploy (antes de tudo)
+        run: |
+          echo "✅ Enviando purchase_id para a API antes do deploy..."
+          curl -X POST "https://seusite.com/api/webhook-deploy" \
+            -H "Content-Type: application/json" \
+            -d "{\"purchase_id\": \"${{ github.event.inputs.purchase_id }}\", \"subdomain\": \"${{ github.event.inputs.subdomain }}\"}"
+
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
@@ -46,7 +54,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H github.com >> ~/.ssh/known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
-           # ===== DEBUG: imprimir inputs =====
+          # ===== DEBUG: imprimir inputs =====
           echo "===== DEBUG: Inputs recebidos ====="
           echo "Subdomain: ${{ github.event.inputs.subdomain }}"
           echo "DB Host: ${{ github.event.inputs.db_host }}"
@@ -57,7 +65,6 @@ jobs:
           echo "SQL File Path: ${{ github.event.inputs.sql_file_path }}"
           echo "Purchase ID: ${{ github.event.inputs.purchase_id }}"
           echo "=================================="
-    # ===== FIM DEBUG =====    
 
       - name: Deploy Real
         run: |
@@ -68,12 +75,14 @@ jobs:
             TARGET_DIR=/home/${{ github.event.inputs.subdomain }}/public_html
             mkdir -p "$TARGET_DIR"
             cd "$TARGET_DIR"
+
             # Backup se existir conteúdo
             if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
               echo "Criando backup..."
               tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* || echo "Backup falhou"
               rm -rf ./*
             fi
+
             # Clonar repositório privado usando a chave criada
             export GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no'
             git clone "${{ github.event.inputs.repository_url }}" .
@@ -81,6 +90,7 @@ jobs:
               echo "Erro: .env.example não encontrado!"
               exit 1
             fi
+
             # Configurar .env
             cp .env.example .env
             sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
@@ -88,6 +98,7 @@ jobs:
             sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
             sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
             sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
+
             # Aplicar template do vhost
             TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
             VHOST_DIR="/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
@@ -102,20 +113,24 @@ jobs:
             else
                 echo "⚠️ Template do vhost não encontrado em $TEMPLATE_PATH"
             fi
+
             # Permissões
             USUARIO=$(stat -c '%U' ..)
             sudo chown -R "$USUARIO:$USUARIO" .
             sudo find . -type d -exec chmod 755 {} \;
             sudo find . -type f -exec chmod 644 {} \;
             sudo chmod -R 775 storage bootstrap/cache || true
+
             # Instalação de dependências
             composer install --no-interaction --optimize-autoloader
             if [ -f package.json ]; then
               npm ci || true
             fi
-            # Configurações Laravel (sem migrate/seed)
+
+            # Configurações Laravel
             php artisan key:generate --force
             php artisan storage:link
+
             # Importar dump SQL do repositório
             SQL_FILE="$TARGET_DIR/${{ github.event.inputs.sql_file_path }}"
             if [ -f "$SQL_FILE" ]; then
@@ -128,6 +143,7 @@ jobs:
             else
               echo "⚠️ Arquivo SQL não encontrado: $SQL_FILE"
             fi
+
             rm -rf "$TARGET_DIR/cache/*" || true
             sudo /usr/local/lsws/bin/lswsctrl reload
             echo "✅ Deploy concluído com sucesso!"
