@@ -30,6 +30,7 @@ on:
       purchase_id: 
         description: 'ID da compra' 
         required: false
+        default: 'não encontrado ou nao fornecido'
 jobs:
   deploy:
     runs-on: ubuntu-latest
