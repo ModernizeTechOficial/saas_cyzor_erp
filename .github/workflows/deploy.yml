@@ -4,170 +4,127 @@ on:
   workflow_dispatch:
     inputs:
       subdomain:
-        description: 'Subdomínio para deploy (ex: denovoagora.cyzor.com.br)'
+        description: 'Subdomain for deployment'
         required: true
-        type: string
       db_host:
         description: 'Database host'
         required: true
         default: 'localhost'
-        type: string
       db_database:
-        description: 'Nome do banco de dados'
+        description: 'Database name'
         required: true
-        type: string
       db_username:
-        description: 'Usuário do banco'
+        description: 'Database username'
         required: true
-        type: string
       db_password:
-        description: 'Senha do banco'
+        description: 'Database password'
         required: true
-        type: string
       repository_url:
-        description: 'URL SSH do repositório GitHub'
+        description: 'Repository SSH URL'
         required: true
         default: 'git@github.com:ModernizeTechOficial/saas_cyzor_erp.git'
-        type: string
       sql_file_path:
-        description: 'Caminho do dump SQL dentro do repositório'
+        description: 'Caminho do SQL dump dentro do repositório'
         required: false
         default: 'database/dump.sql'
-        type: string
-      purchase_id:
-        description: 'ID da compra (opcional)'
-        required: false
-        default: 'vazio'
-        type: string
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout workflow repository
+      - name: Checkout workflow
         uses: actions/checkout@v4
 
-      - name: Setup SSH Key
+      - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
-          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Debug - Mostrar inputs recebidos
-        run: |
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+           # ===== DEBUG: imprimir inputs =====
           echo "===== DEBUG: Inputs recebidos ====="
-          echo "Subdomínio: ${{ inputs.subdomain }}"
-          echo "DB Host: ${{ inputs.db_host }}"
-          echo "DB Name: ${{ inputs.db_database }}"
-          echo "DB User: ${{ inputs.db_username }}"
-          echo "DB Password: [OCULTO]"
-          echo "Repo URL: ${{ inputs.repository_url }}"
-          echo "SQL Path: ${{ inputs.sql_file_path }}"
+          echo "Subdomain: ${{ github.event.inputs.subdomain }}"
+          echo "DB Host: ${{ github.event.inputs.db_host }}"
+          echo "DB Name: ${{ github.event.inputs.db_database }}"
+          echo "DB User: ${{ github.event.inputs.db_username }}"
+          echo "DB Password: ${{ github.event.inputs.db_password }}"
+          echo "Repository URL: ${{ github.event.inputs.repository_url }}"
+          echo "SQL File Path: ${{ github.event.inputs.sql_file_path }}"
           echo "=================================="
+    # ===== FIM DEBUG =====    
 
-      - name: Deploy no Servidor (Corrigido)
+      - name: Deploy Real
         run: |
           export TERM=xterm
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << EOF
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
             set -e
             export TERM=xterm
-
-            # Variáveis interpoladas localmente (no runner) e enviadas ao servidor
-            SUBDOMAIN="${{ inputs.subdomain }}"
-            DB_HOST="${{ inputs.db_host }}"
-            DB_DATABASE="${{ inputs.db_database }}"
-            DB_USERNAME="${{ inputs.db_username }}"
-            DB_PASSWORD="${{ inputs.db_password }}"
-            REPO_URL="${{ inputs.repository_url }}"
-            SQL_PATH="${{ inputs.sql_file_path }}"
-
-            echo "Iniciando deploy para: https://\$SUBDOMAIN"
-
-            TARGET_DIR="/home/\$SUBDOMAIN/public_html"
-            mkdir -p "\$TARGET_DIR"
-            cd "\$TARGET_DIR"
-
-            # Backup automático se já existir algo
-            if [ -d "\$TARGET_DIR" ] && [ "\$(ls -A "\$TARGET_DIR" 2>/dev/null || echo '')" ]; then
+            TARGET_DIR=/home/${{ github.event.inputs.subdomain }}/public_html
+            mkdir -p "$TARGET_DIR"
+            cd "$TARGET_DIR"
+            # Backup se existir conteúdo
+            if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
               echo "Criando backup..."
-              BACKUP_FILE="../backup_\$(date +%F_%H-%M-%S).tar.gz"
-              tar -czf "\$BACKUP_FILE" ./* 2>/dev/null || echo "Backup falhou ou diretório vazio"
+              tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* || echo "Backup falhou"
               rm -rf ./*
             fi
-
-            # Clone do repositório privado
-            echo "Clonando repositório..."
-            git clone "\$REPO_URL" . || { echo "Erro no git clone"; exit 1; }
-
-            # Verificar se .env.example existe
+            # Clonar repositório privado usando a chave criada
+            export GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no'
+            git clone "${{ github.event.inputs.repository_url }}" .
             if [ ! -f .env.example ]; then
               echo "Erro: .env.example não encontrado!"
               exit 1
             fi
-
-            # Configuração do .env
+            # Configurar .env
             cp .env.example .env
-            sed -i "s|APP_URL=.*|APP_URL=https://\$SUBDOMAIN|" .env
-            sed -i "s|DB_HOST=.*|DB_HOST=\$DB_HOST|" .env
-            sed -i "s|DB_DATABASE=.*|DB_DATABASE=\$DB_DATABASE|" .env
-            sed -i "s|DB_USERNAME=.*|DB_USERNAME=\$DB_USERNAME|" .env
-            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=\$DB_PASSWORD|" .env
-
-            # Aplicar template do Virtual Host (LiteSpeed)
-            TEMPLATE_PATH="\$TARGET_DIR/.github/templates/vhconf.template"
-            VHOST_DIR="/usr/local/lsws/conf/vhosts/\$SUBDOMAIN"
-
-            if [ -f "\$TEMPLATE_PATH" ]; then
-              echo "Aplicando configuração do Virtual Host..."
-              sudo mkdir -p "\$VHOST_DIR"
-              sudo cp "\$TEMPLATE_PATH" "\$VHOST_DIR/vhconf.conf"
-              sudo sed -i "s|{{DOMAIN}}|\$SUBDOMAIN|g" "\$VHOST_DIR/vhconf.conf"
-              sudo sed -i "s|{{PUBLIC_DIR}}|\$TARGET_DIR/public|g" "\$VHOST_DIR/vhconf.conf"
-              sudo /usr/local/lsws/bin/lswsctrl reload || echo "Falha no reload do LiteSpeed"
-              echo "Virtual Host configurado e recarregado"
+            sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
+            sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
+            sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
+            sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
+            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
+            # Aplicar template do vhost
+            TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
+            VHOST_DIR="/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
+            if [ -f "$TEMPLATE_PATH" ]; then
+                echo "🧩 Aplicando template do vhost..."
+                sudo mkdir -p "$VHOST_DIR"
+                sudo cp "$TEMPLATE_PATH" "$VHOST_DIR/vhconf.conf"
+                sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "$VHOST_DIR/vhconf.conf"
+                sudo sed -i "s|{{PUBLIC_DIR}}|$TARGET_DIR/public|g" "$VHOST_DIR/vhconf.conf"
+                sudo /usr/local/lsws/bin/lswsctrl reload
+                echo "✅ Template do vhost aplicado"
             else
-              echo "Template de vhost não encontrado em \$TEMPLATE_PATH"
+                echo "⚠️ Template do vhost não encontrado em $TEMPLATE_PATH"
             fi
-
-            # Corrigir permissões
-            USUARIO=\$(stat -c '%U' ..)
-            sudo chown -R "\$USUARIO:\$USUARIO" .
+            # Permissões
+            USUARIO=$(stat -c '%U' ..)
+            sudo chown -R "$USUARIO:$USUARIO" .
             sudo find . -type d -exec chmod 755 {} \;
             sudo find . -type f -exec chmod 644 {} \;
-            sudo chmod -R 775 storage bootstrap/cache 2>/dev/null || true
-
-            # Instalar dependências
-            echo "Instalando Composer..."
-            composer install --no-interaction --optimize-autoloader --no-dev
-
+            sudo chmod -R 775 storage bootstrap/cache || true
+            # Instalação de dependências
+            composer install --no-interaction --optimize-autoloader
             if [ -f package.json ]; then
-              echo "Instalando Node.js dependencies..."
-              npm ci --only=production || npm install --production
+              npm ci || true
             fi
-
-            # Laravel
+            # Configurações Laravel (sem migrate/seed)
             php artisan key:generate --force
             php artisan storage:link
-            php artisan config:cache
-            php artisan route:cache
-            php artisan view:cache
-
-            # Importar dump SQL (se existir)
-            SQL_FILE="\$TARGET_DIR/\$SQL_PATH"
-            if [ -f "\$SQL_FILE" ]; then
-              echo "Importando banco de dados: \$SQL_FILE"
-              mysql -h "\$DB_HOST" -u "\$DB_USERNAME" -p"\$DB_PASSWORD" "\$DB_DATABASE" < "\$SQL_FILE"
-              echo "Banco de dados importado com sucesso"
+            # Importar dump SQL do repositório
+            SQL_FILE="$TARGET_DIR/${{ github.event.inputs.sql_file_path }}"
+            if [ -f "$SQL_FILE" ]; then
+              echo "🔹 Importando dump SQL $SQL_FILE..."
+              mysql -h "${{ github.event.inputs.db_host }}" \
+                    -u "${{ github.event.inputs.db_username }}" \
+                    -p"${{ github.event.inputs.db_password }}" \
+                    "${{ github.event.inputs.db_database }}" < "$SQL_FILE"
+              echo "✅ Dump SQL importado com sucesso"
             else
-              echo "Arquivo SQL não encontrado: \$SQL_FILE (pular importação)"
+              echo "⚠️ Arquivo SQL não encontrado: $SQL_FILE"
             fi
-
-            # Limpar cache do Laravel e LiteSpeed
-            rm -rf storage/framework/cache/data/* 2>/dev/null || true
-            sudo /usr/local/lsws/bin/lswsctrl reload || true
-
-            echo "DEPLOY CONCLUÍDO COM SUCESSO!"
-            echo "Acesse: https://\$SUBDOMAIN"
+            rm -rf "$TARGET_DIR/cache/*" || true
+            sudo /usr/local/lsws/bin/lswsctrl reload
+            echo "✅ Deploy concluído com sucesso!"
           EOF
