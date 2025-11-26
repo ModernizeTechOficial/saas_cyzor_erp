@@ -40,115 +40,78 @@ jobs:
       SUBDOMAIN: ${{ github.event.inputs.subdomain }}
 
     steps:
-      - name: Checkout workflow
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ===== FUNÇÃO SEND_STEP DISPONÍVEL EM TODO O JOB =====
-      - name: Definir função send_step
+      - name: Notificar início
         run: |
-          echo 'send_step() {
-            local MSG="$1"
-            local STATUS="$2"
-            curl -s -X POST "https://cyzor.com.br/api/github/deploy-step" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"purchase_id\": \"${PURCHASE_ID}\",
-                \"subdomain\": \"${SUBDOMAIN}\",
-                \"step\": \"$MSG\",
-                \"status\": \"$STATUS\"
-              }"
-            echo ">>> STEP: $MSG | STATUS: $STATUS"
-          }' >> $GITHUB_ENV
-
-      - name: Notificar início do deploy
-        run: |
-          send_step "Inicializando workflow do GitHub Actions" "start"
-          curl -X POST "https://cyzor.com.br/api/github/webhook" \
+          curl -s -X POST "https://cyzor.com.br/api/github/deploy-step" \
             -H "Content-Type: application/json" \
-            -d "{\"purchase_id\": \"$PURCHASE_ID\", \"subdomain\": \"$SUBDOMAIN\"}"
-          send_step "Inicializando workflow do GitHub Actions" "finish"
+            -d "{
+              \"purchase_id\": \"${PURCHASE_ID}\",
+              \"subdomain\": \"${SUBDOMAIN}\",
+              \"step\": \"Iniciando workflow\",
+              \"status\": \"start\"
+            }"
 
       - name: Configurar SSH
         run: |
-          send_step "Configurando chave SSH" "start"
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
-          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
-          send_step "Configurando chave SSH" "finish"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy no servidor
         run: |
-          send_step "Iniciando deploy no servidor" "start"
-
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << EOF
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
             set -e
 
-            # Definindo a função send_step no servidor remoto
-            send_step() {
-              MSG="\$1"
-              STATUS="\$2"
-              curl -s -X POST "https://cyzor.com.br/api/github/deploy-step" \
-                -H "Content-Type: application/json" \
-                -d "{
-                  \"purchase_id\": \"$PURCHASE_ID\",
-                  \"subdomain\": \"$SUBDOMAIN\",
-                  \"step\": \"\$MSG\",
-                  \"status\": \"\$STATUS\"
-                }"
-              echo ">>> STEP: \$MSG | STATUS: \$STATUS"
-            }
-
-            TARGET_DIR="/home/${SUBDOMAIN}/public_html"
-            mkdir -p "\$TARGET_DIR"
-            cd "\$TARGET_DIR"
-
-            send_step "Criando diretório de destino" "finish"
+            TARGET_DIR="/home/${{ github.event.inputs.subdomain }}/public_html"
+            mkdir -p "$TARGET_DIR"
+            cd "$TARGET_DIR"
 
             # Backup se já existir algo
-            if [ -d "\$TARGET_DIR" ] && [ "\$(ls -A "\$TARGET_DIR" 2>/dev/null)" ]; then
-              send_step "Criando backup do ambiente atual" "start"
-              tar -czf "../backup_\$(date +%F_%H-%M-%S).tar.gz" ./* 2>/dev/null || true
+            if [ "$(ls -A . 2>/dev/null)" ]; then
+              tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* 2>/dev/null || true
               rm -rf ./*
-              send_step "Criando backup do ambiente atual" "finish"
             fi
 
-            send_step "Clonando repositório" "start"
-            git clone "${{ github.event.inputs.repository_url }}" . || { send_step "Clonando repositório" "error"; exit 1; }
-            send_step "Clonando repositório" "finish"
+            # Clonar repositório
+            git clone "${{ github.event.inputs.repository_url }}" . || exit 1
 
-            send_step "Configurando .env" "start"
+            # Configurar .env
             cp .env.example .env
-            sed -i "s|APP_URL=.*|APP_URL=https://${SUBDOMAIN}|" .env
+            sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
             sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
             sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
             sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
             sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
-            send_step "Configurando .env" "finish"
 
-            send_step "Instalando dependências Composer" "start"
+            # Composer
             composer install --no-interaction --no-dev --optimize-autoloader
-            send_step "Instalando dependências Composer" "finish"
 
-            send_step "Gerando chave da aplicação" "start"
+            # Gerar chave e criar storage link
             php artisan key:generate --force
-            send_step "Gerando chave da aplicação" "finish"
-
-            send_step "Criando link storage" "start"
             php artisan storage:link || true
-            send_step "Criando link storage" "finish"
 
+            # Importar SQL
             SQL_FILE="${{ github.event.inputs.sql_file_path }}"
-            if [ -f "\$SQL_FILE" ]; then
-              send_step "Importando dump SQL" "start"
-              mysql -h "${{ github.event.inputs.db_host }}" -u "${{ github.event.inputs.db_username }}" -p"${{ github.event.inputs.db_password }}" "${{ github.event.inputs.db_database }}" < "\$SQL_FILE"
-              send_step "Importando dump SQL" "finish"
-            else
-              send_step "Arquivo SQL não encontrado (\$SQL_FILE)" "error"
+            if [ -f "$SQL_FILE" ]; then
+              mysql -h "${{ github.event.inputs.db_host }}" \
+                    -u "${{ github.event.inputs.db_username }}" \
+                    -p"${{ github.event.inputs.db_password }}" \
+                    "${{ github.event.inputs.db_database }}" < "$SQL_FILE"
             fi
+            EOF
 
-            send_step "Deploy concluído com sucesso!" "finish"
-          EOF
-
-          send_step "Deploy concluído com sucesso!" "finish"
+      - name: Notificar finalização
+        run: |
+          curl -s -X POST "https://cyzor.com.br/api/github/deploy-step" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"purchase_id\": \"${PURCHASE_ID}\",
+              \"subdomain\": \"${SUBDOMAIN}\",
+              \"step\": \"Deploy concluído\",
+              \"status\": \"finish\"
+            }"
