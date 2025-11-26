@@ -40,78 +40,83 @@ jobs:
       SUBDOMAIN: ${{ github.event.inputs.subdomain }}
 
     steps:
-      - name: Checkout
+      - name: Checkout workflow
         uses: actions/checkout@v4
 
-      - name: Notificar início
+      - name: Notificar início do deploy
         run: |
           curl -s -X POST "https://cyzor.com.br/api/github/deploy-step" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"purchase_id\": \"${PURCHASE_ID}\",
-              \"subdomain\": \"${SUBDOMAIN}\",
-              \"step\": \"Iniciando workflow\",
-              \"status\": \"start\"
-            }"
+            -d "{\"purchase_id\":\"${PURCHASE_ID}\",\"subdomain\":\"${SUBDOMAIN}\",\"step\":\"Deploy iniciado\",\"status\":\"start\"}"
+          curl -X POST "https://cyzor.com.br/api/github/webhook" \
+            -H "Content-Type: application/json" \
+            -d "{\"purchase_id\":\"${PURCHASE_ID}\",\"subdomain\":\"${SUBDOMAIN}\"}"
 
       - name: Configurar SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-          ssh-keyscan ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy no servidor
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} bash -c '
             set -e
 
-            TARGET_DIR="/home/${{ github.event.inputs.subdomain }}/public_html"
+            TARGET_DIR="/home/${SUBDOMAIN}/public_html"
             mkdir -p "$TARGET_DIR"
             cd "$TARGET_DIR"
 
-            # Backup se já existir algo
-            if [ "$(ls -A . 2>/dev/null)" ]; then
+            notify_step() {
+              MSG="$1"
+              STATUS="$2"
+              curl -s -X POST "https://cyzor.com.br/api/github/deploy-step" \
+                -H "Content-Type: application/json" \
+                -d "{\"purchase_id\":\"'${PURCHASE_ID}'\",\"subdomain\":\"'${SUBDOMAIN}'\",\"step\":\"$MSG\",\"status\":\"$STATUS\"}"
+              echo ">>> STEP: $MSG | STATUS: $STATUS"
+            }
+
+            notify_step "Deploy iniciado" "start"
+
+            # Backup se existir algo
+            if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]; then
               tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* 2>/dev/null || true
               rm -rf ./*
             fi
 
             # Clonar repositório
-            git clone "${{ github.event.inputs.repository_url }}" . || exit 1
+            git clone "${{ github.event.inputs.repository_url }}" . || true
 
             # Configurar .env
             cp .env.example .env
-            sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
+            sed -i "s|APP_URL=.*|APP_URL=https://${SUBDOMAIN}|" .env
             sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
             sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
             sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
             sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
 
-            # Composer
+            # Dependências Composer
             composer install --no-interaction --no-dev --optimize-autoloader
 
-            # Gerar chave e criar storage link
+            # APP_KEY
             php artisan key:generate --force
+
+            # Storage link
             php artisan storage:link || true
 
-            # Importar SQL
+            # Importar dump SQL
             SQL_FILE="${{ github.event.inputs.sql_file_path }}"
             if [ -f "$SQL_FILE" ]; then
-              mysql -h "${{ github.event.inputs.db_host }}" \
-                    -u "${{ github.event.inputs.db_username }}" \
-                    -p"${{ github.event.inputs.db_password }}" \
-                    "${{ github.event.inputs.db_database }}" < "$SQL_FILE"
+              mysql -h "${{ github.event.inputs.db_host }}" -u "${{ github.event.inputs.db_username }}" -p"${{ github.event.inputs.db_password }}" "${{ github.event.inputs.db_database }}" < "$SQL_FILE"
             fi
-            EOF
 
-      - name: Notificar finalização
+            notify_step "Deploy finalizado" "finish"
+          '
+
+      - name: Notificar fim do deploy
         run: |
           curl -s -X POST "https://cyzor.com.br/api/github/deploy-step" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"purchase_id\": \"${PURCHASE_ID}\",
-              \"subdomain\": \"${SUBDOMAIN}\",
-              \"step\": \"Deploy concluído\",
-              \"status\": \"finish\"
-            }"
+            -d "{\"purchase_id\":\"${PURCHASE_ID}\",\"subdomain\":\"${SUBDOMAIN}\",\"step\":\"Deploy finalizado\",\"status\":\"finish\"}"
