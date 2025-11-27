@@ -35,168 +35,175 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     env:
       PURCHASE_ID: ${{ github.event.inputs.purchase_id }}
       SUBDOMAIN: ${{ github.event.inputs.subdomain }}
-      API_URL: https://cyzor.com.br/api/github/deploy-step
 
     steps:
-      - name: Checkout workflow repository
+      - name: Checkout workflow
         uses: actions/checkout@v4
 
-      # Função reutilizável para notificar a API
-      - name: Notify API - Step
-        id: notify
-        run: |
-          STEP="$1"
-          STATUS="$2"  # in_progress ou completed ou failed
-
-          echo "Notificando: $STEP ($STATUS)"
-          curl -X POST "$API_URL" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"purchase_id\": \"${PURCHASE_ID}\",
-              \"subdomain\": \"${SUBDOMAIN}\",
-              \"step\": \"$STEP\",
-              \"status\": \"$STATUS\"
-            }" || echo "Falha ao notificar API (continuando...)"
+      - name: Notificar API sobre deploy (antes de tudo)
         env:
-          API_URL: ${{ env.API_URL }}
-        continue-on-error: true
-        shell: bash {0}
-
-      # Início do Deploy
-      - name: Notify - Iniciando Deploy
+          PURCHASE_ID: ${{ github.event.inputs.purchase_id }}
+          SUBDOMAIN: ${{ github.event.inputs.subdomain }}
         run: |
-          ${{ steps.notify.outputs.command }} "Iniciando deploy no servidor" "in_progress"
+          echo "Enviando purchase_id para a API antes do deploy..."
+          curl -X POST "https://cyzor.com.br/api/github/webhook" \
+            -H "Content-Type: application/json" \
+            -d "{\"purchase_id\": \"${PURCHASE_ID}\", \"subdomain\": \"${SUBDOMAIN}\"}"
 
       - name: Setup SSH key
         run: |
-          ${{ steps.notify.outputs.command }} "Configurando chave SSH" "in_progress"
           mkdir -p ~/.ssh
           echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H github.com >> ~/.ssh/known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
-          ${{ steps.notify.outputs.command }} "Configurando chave SSH" "completed"
+          echo "===== DEBUG: Inputs recebidos ====="
+          echo "Subdomain: ${{ github.event.inputs.subdomain }}"
+          echo "DB Host: ${{ github.event.inputs.db_host }}"
+          echo "DB Name: ${{ github.event.inputs.db_database }}"
+          echo "DB User: ${{ github.event.inputs.db_username }}"
+          echo "DB Password: ${{ github.event.inputs.db_password }}"
+          echo "Repository URL: ${{ github.event.inputs.repository_url }}"
+          echo "SQL File Path: ${{ github.event.inputs.sql_file_path }}"
+          echo "Purchase ID: ${{ github.event.inputs.purchase_id }}"
+          echo "=================================="
 
-      - name: Deploy no Servidor
+      - name: Deploy Real
         run: |
           export TERM=xterm
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
             set -e
             export TERM=xterm
+            TARGET_DIR=/home/${{ github.event.inputs.subdomain }}/public_html
 
-            # Função para notificar via runner (usando files para passar mensagens)
+            # Função que marca as etapas no log do GitHub Actions
             notify() {
-              echo "::set-output name=notify_step::$1"
-              echo "::set-output name=notify_status::$2"
+              echo "::set-output name=step::$1"
+              echo "::set-output name=status::$2"
             }
 
-            TARGET_DIR=/home/${{ github.event.inputs.subdomain }}/public_html
+            notify "Iniciando deploy no servidor" "in_progress"
+
             mkdir -p "$TARGET_DIR"
             cd "$TARGET_DIR"
 
-            notify "Criando diretórios e backup" "in_progress"
             # Backup se existir conteúdo
             if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
               echo "Criando backup..."
               tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* || echo "Backup falhou"
               rm -rf ./*
             fi
-            notify "Criando diretórios e backup" "completed"
+            notify "Backup concluído" "completed"
 
-            notify "Clonando repositório" "in_progress"
+            # Clonar repositório privado usando a chave criada
             export GIT_SSH_COMMAND='ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no'
-            git clone "${{ github.event.inputs.repository_url }}" . || { notify "Clonando repositório" "failed"; exit 1; }
-            notify "Clonando repositório" "completed"
+            git clone "${{ github.event.inputs.repository_url }}" .
+            notify "Repositório clonado" "completed"
 
-            notify "Configurando arquivo .env" "in_progress"
+            if [ ! -f .env.example ]; then
+              echo "Erro: .env.example não encontrado!"
+              exit 1
+            fi
+
+            # Configurar .env
             cp .env.example .env
-            sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|g" .env
+            sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
             sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
             sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
             sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
             sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
-            notify "Configurando arquivo .env" "completed"
+            notify ".env configurado" "completed"
 
-            notify "Configurando Virtual Host (LiteSpeed)" "in_progress"
+            # Aplicar template do vhost
             TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
             VHOST_DIR="/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}"
             if [ -f "$TEMPLATE_PATH" ]; then
+                echo "Aplicando template do vhost..."
                 sudo mkdir -p "$VHOST_DIR"
                 sudo cp "$TEMPLATE_PATH" "$VHOST_DIR/vhconf.conf"
                 sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "$VHOST_DIR/vhconf.conf"
                 sudo sed -i "s|{{PUBLIC_DIR}}|$TARGET_DIR/public|g" "$VHOST_DIR/vhconf.conf"
                 sudo /usr/local/lsws/bin/lswsctrl reload
+                echo "Template do vhost aplicado"
+            else
+                echo "Template do vhost não encontrado em $TEMPLATE_PATH"
             fi
-            notify "Configurando Virtual Host (LiteSpeed)" "completed"
+            notify "Virtual Host configurado" "completed"
 
-            notify "Ajustando permissões" "in_progress"
+            # Permissões
             USUARIO=$(stat -c '%U' ..)
             sudo chown -R "$USUARIO:$USUARIO" .
             sudo find . -type d -exec chmod 755 {} \;
             sudo find . -type f -exec chmod 644 {} \;
             sudo chmod -R 775 storage bootstrap/cache || true
-            notify "Ajustando permissões" "completed"
+            notify "Permissões ajustadas" "completed"
 
-            notify "Instalando dependências (Composer)" "in_progress"
+            # Instalação de dependências
             composer install --no-interaction --optimize-autoloader
-            notify "Instalando dependências (Composer)" "completed"
-
             if [ -f package.json ]; then
-              notify "Instalando dependências (NPM)" "in_progress"
               npm ci || true
-              notify "Instalando dependências (NPM)" "completed"
             fi
+            notify "Dependências instaladas" "completed"
 
-            notify "Executando comandos do Laravel" "in_progress"
+            # Configurações Laravel
             php artisan key:generate --force
             php artisan storage:link
-            notify "Executando comandos do Laravel" "completed"
+            notify "Laravel configurado" "completed"
 
+            # Importar dump SQL do repositório
             SQL_FILE="$TARGET_DIR/${{ github.event.inputs.sql_file_path }}"
             if [ -f "$SQL_FILE" ]; then
-              notify "Importando banco de dados" "in_progress"
+              echo "Importando dump SQL $SQL_FILE..."
               mysql -h "${{ github.event.inputs.db_host }}" \
                     -u "${{ github.event.inputs.db_username }}" \
                     -p"${{ github.event.inputs.db_password }}" \
-                    "${{ github.event.inputs.db_database }}" < "$SQL_FILE" || { notify "Importando banco de dados" "failed"; exit 1; }
-              notify "Importando banco de dados" "completed"
+                    "${{ github.event.inputs.db_database }}" < "$SQL_FILE"
+              echo "Dump SQL importado com sucesso"
+              notify "Banco de dados importado" "completed"
             else
-              echo "Aviso: Arquivo SQL não encontrado: $SQL_FILE"
+              echo "Arquivo SQL não encontrado: $SQL_FILE"
+              notify "Banco de dados (sem dump)" "completed"
             fi
 
-            notify "Finalizando deploy" "in_progress"
             rm -rf "$TARGET_DIR/cache/*" || true
             sudo /usr/local/lsws/bin/lswsctrl reload
             echo "Deploy concluído com sucesso!"
             notify "Deploy concluído com sucesso!" "completed"
           EOF
 
-      # Notificação final de sucesso
-      - name: Notify - Deploy Concluído com Sucesso
+      # AQUI É ONDE A MÁGICA ACONTECE: envia TODAS as etapas pro seu painel
+      - name: Enviar etapas para o painel
+        if: always()
+        run: |
+          # Pega todas as linhas que o notify() gravou no log
+          grep "step::" -A1 "${{ github.event_path }}" || true > /tmp/steps.txt
+
+          while IFS= read -r step_line && IFS= read -r status_line <&3; do
+            STEP=$(echo "$step_line" | cut -d: -f3-)
+            STATUS=$(echo "$status_line" | cut -d: -f3-)
+            
+            curl -X POST https://cyzor.com.br/api/github/deploy-step \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"purchase_id\": \"${{ env.PURCHASE_ID }}\",
+                \"subdomain\": \"${{ env.SUBDOMAIN }}\",
+                \"step\": \"$STEP\",
+                \"status\": \"$STATUS\"
+              }" || true
+          done < /tmp/steps.txt 3< /tmp/steps.txt
+
+      # Final (opcional)
+      - name: Notificar sucesso final
         if: success()
         run: |
-          curl -X POST "$API_URL" \
+          curl -X POST https://cyzor.com.br/api/github/deploy-step \
             -H "Content-Type: application/json" \
             -d '{
               "purchase_id": "${{ env.PURCHASE_ID }}",
               "subdomain": "${{ env.SUBDOMAIN }}",
-              "step": "Deploy concluído com sucesso!",
+              "step": "Site no ar!",
               "status": "completed"
-            }'
-
-      # Notificação final de erro (caso algo falhe)
-      - name: Notify - Deploy Falhou
-        if: failure()
-        run: |
-          curl -X POST "$API_URL" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "purchase_id": "${{ env.PURCHASE_ID }}",
-              "subdomain": "${{ env.SUBDOMAIN }}",
-              "step": "Deploy falhou",
-              "status": "failed"
             }'
