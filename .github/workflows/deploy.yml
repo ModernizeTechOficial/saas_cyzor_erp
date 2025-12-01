@@ -31,6 +31,10 @@ on:
         description: 'ID da compra'
         required: false
         default: 'não encontrado'
+      ssh_key_name:
+        description: 'Nome da chave SSH no servidor (ex: cyzor_erp)'
+        required: false
+        default: 'id_ed25519'
 
 jobs:
   deploy:
@@ -53,14 +57,14 @@ jobs:
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
+          echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/{{ env.SSH_KEY_NAME }}
+          chmod 600 ~/.ssh/{{ env.SSH_KEY_NAME }}
           ssh-keyscan -H github.com >> ~/.ssh/known_hosts
           ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
 
       - name: Deploy Real → TEMPO REAL A CADA ETAPA
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+          ssh -i ~/.ssh/{{ env.SSH_KEY_NAME }} -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
             set -e
 
             # FUNÇÃO PARA NOTIFICAR O PAINEL
@@ -94,7 +98,7 @@ jobs:
 
             # Clonar repositório
             notify "Clonando repositório" "in_progress" 20
-            export GIT_SSH_COMMAND="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no"
+            export GIT_SSH_COMMAND="ssh -i ~/.ssh/{{ env.SSH_KEY_NAME }} -o StrictHostKeyChecking=no"
             git clone "${{ github.event.inputs.repository_url }}" . || true
             notify "Repositório clonado" "completed" 25
 
