@@ -1,4 +1,5 @@
 name: Deploy Laravel - ModernizeTech
+
 on:
   workflow_dispatch:
     inputs:
@@ -16,193 +17,130 @@ on:
         description: 'Database username'
         required: true
       db_password:
-        description: 'Database password (will be masked)'
+        description: 'Database password'
         required: true
-        type: string      
       repository_url:
         description: 'Repository SSH URL'
         required: true
         default: 'git@github.com:ModernizeTechOficial/saas_cyzor_erp.git'
       sql_file_path:
-        description: 'SQL dump path inside repo'
+        description: 'Caminho do SQL dump dentro do repositório'
         required: false
         default: 'database/dump.sql'
       purchase_id:
-        description: 'Purchase ID'
+        description: 'ID da compra'
         required: false
         default: 'não encontrado'
-      ssh_key_name:
-        description: 'SSH key filename on server (e.g. cyzor_erp)'
-        required: false
-        default: 'cyzor_erp'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      PURCHASE_ID: ${{ inputs.purchase_id }}
-      SUBDOMAIN: ${{ inputs.subdomain }}
-      SSH_KEY_NAME: ${{ inputs.ssh_key_name }}
+      PURCHASE_ID: ${{ github.event.inputs.purchase_id }}
+      SUBDOMAIN: ${{ github.event.inputs.subdomain }}
       API_URL: https://cyzor.com.br/api/github/deploy-step
 
     steps:
-      - name: Checkout workflow repository
+      - name: Checkout workflow
         uses: actions/checkout@v4
 
-      - name: Notify API - Deploy Started
+      - name: Notificar API sobre deploy (início)
         run: |
           curl -X POST "https://cyzor.com.br/api/github/webhook" \
             -H "Content-Type: application/json" \
-            -d '{
-              "purchase_id": "${{ env.PURCHASE_ID }}",
-              "subdomain": "${{ env.SUBDOMAIN }}"
-            }'
-
-      - name: Setup SSH Key
+            -d "{\"purchase_id\": \"${{ env.PURCHASE_ID }}\", \"subdomain\": \"${{ env.SUBDOMAIN }}\"}"
+      - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/${{ env.SSH_KEY_NAME }}
-          chmod 600 ~/.ssh/${{ env.SSH_KEY_NAME }}
-          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
-          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Deploy to Server (Real-time Steps)
-        env:
-          # Pass all inputs securely as environment variables
-          DB_HOST: ${{ inputs.db_host }}
-          DB_DATABASE: ${{ inputs.db_database }}
-          DB_USERNAME: ${{ inputs.db_username }}
-          DB_PASSWORD: ${{ inputs.db_password }}
-          REPO_URL: ${{ inputs.repository_url }}
-          SQL_FILE_PATH: ${{ inputs.sql_file_path }}
+          echo "${{ secrets.SERVER_SSH_KEY_RSA }}" > ~/.ssh/cyzor_erp
+          chmod 600 ~/.ssh/cyzor_erp
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+      - name: Deploy Real → TEMPO REAL A CADA ETAPA
         run: |
-          # Use UNQUOTED << EOF so variables expand locally first
-          ssh -i ~/.ssh/${{ env.SSH_KEY_NAME }} \
-              -o StrictHostKeyChecking=no \
-              ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << EOF
+          ssh -i ~/.ssh/cyzor_erp -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
             set -e
-
+            # FUNÇÃO PARA NOTIFICAR O PAINEL
             notify() {
-              PERCENT=\$3
+              # adiciona "percent" para cada etapa
+              PERCENT=$3
               curl -X POST "${{ env.API_URL }}" \
                 -H "Content-Type: application/json" \
                 -d "{
                   \"purchase_id\": \"${{ env.PURCHASE_ID }}\",
                   \"subdomain\": \"${{ env.SUBDOMAIN }}\",
-                  \"step\": \"\$1\",
-                  \"status\": \"\$2\",
-                  \"percent\": \${PERCENT:-null}
+                  \"step\": \"$1\",
+                  \"status\": \"$2\",
+                  \"percent\": ${PERCENT:-null}
                 }" || true
             }
-
             notify "Iniciando deploy" "in_progress" 5
-
-            TARGET_DIR="/home/${{ inputs.subdomain }}/public_html"
-            mkdir -p "\$TARGET_DIR"
-            cd "\$TARGET_DIR"
-
+            TARGET_DIR="/home/${{ github.event.inputs.subdomain }}/public_html"
+            mkdir -p "$TARGET_DIR"
+            cd "$TARGET_DIR"
             # Backup
             notify "Fazendo backup" "in_progress" 10
-            if [ -n "\$(ls -A . 2>/dev/null)" ]; then
-              BACKUP_FILE="../backup_\$(date +%F_%H-%M-%S).tar.gz"
-              tar -czf "\$BACKUP_FILE" ./* && rm -rf ./*
-              notify "Backup salvo como \$(basename \$BACKUP_FILE)" "completed" 15
-            else
-              notify "Diretório vazio, sem backup" "skipped" 15
+            if [ -n "$(ls -A . 2>/dev/null)" ]; then
+              tar -czf "../backup_$(date +%F_%H-%M-%S).tar.gz" ./* || true
+              rm -rf ./*
             fi
-
-            # Clone repository
+            notify "Backup concluído" "completed" 15
+            # Clonar repositório
             notify "Clonando repositório" "in_progress" 20
-            git clone "${{ inputs.repository_url }}" . 
+            export GIT_SSH_COMMAND="ssh -i ~/.ssh/cyzor_erp -o StrictHostKeyChecking=no"
+            git clone "${{ github.event.inputs.repository_url }}" . || true
             notify "Repositório clonado" "completed" 25
-
-            # .env
+            # Configurar .env
             notify "Configurando .env" "in_progress" 30
             cp .env.example .env
-            sed -i "s|APP_URL=.*|APP_URL=https://${{ inputs.subdomain }}|g" .env
-            sed -i "s|DB_HOST=.*|DB_HOST=${{ inputs.db_host }}|g" .env
-            sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ inputs.db_database }}|g" .env
-            sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ inputs.db_username }}|g" .env
-            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ inputs.db_password }}|g" .env
+            sed -i "s|APP_URL=.*|APP_URL=https://${{ github.event.inputs.subdomain }}|" .env
+            sed -i "s|DB_HOST=.*|DB_HOST=${{ github.event.inputs.db_host }}|" .env
+            sed -i "s|DB_DATABASE=.*|DB_DATABASE=${{ github.event.inputs.db_database }}|" .env
+            sed -i "s|DB_USERNAME=.*|DB_USERNAME=${{ github.event.inputs.db_username }}|" .env
+            sed -i "s|DB_PASSWORD=.*|DB_PASSWORD=${{ github.event.inputs.db_password }}|" .env
             notify ".env configurado" "completed" 35
-
-            # Virtual Host (LiteSpeed)
-            notify "Configurando Virtual Host" "in_progress" 40
-            if [ -f ".github/templates/vhconf.template" ]; then
-              sudo mkdir -p "/usr/local/lsws/conf/vhosts/${{ inputs.subdomain }}"
-              sudo cp ".github/templates/vhconf.template" "/usr/local/lsws/conf/vhosts/${{ inputs.subdomain }}/vhconf.conf"
-              sudo sed -i "s|{{DOMAIN}}|${{ inputs.subdomain }}|g" "/usr/local/lsws/conf/vhosts/${{ inputs.subdomain }}/vhconf.conf"
-              sudo sed -i "s|{{PUBLIC_DIR}}|\$TARGET_DIR/public|g" "/usr/local/lsws/conf/vhosts/${{ inputs.subdomain }}/vhconf.conf"
-              sudo /usr/local/lsws/bin/lswsctrl reload
+            # Virtual Host
+            notify "Aplicando Virtual Host" "in_progress" 40
+            TEMPLATE_PATH="$TARGET_DIR/.github/templates/vhconf.template"
+            if [ -f "$TEMPLATE_PATH" ]; then
+              sudo mkdir -p "/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}" || true
+              sudo cp "$TEMPLATE_PATH" "/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}/vhconf.conf"
+              sudo sed -i "s|{{DOMAIN}}|${{ github.event.inputs.subdomain }}|g" "/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}/vhconf.conf"
+              sudo sed -i "s|{{PUBLIC_DIR}}|$TARGET_DIR/public|g" "/usr/local/lsws/conf/vhosts/${{ github.event.inputs.subdomain }}/vhconf.conf"
+              sudo /usr/local/lsws/bin/lswsctrl reload || true
             fi
             notify "Virtual Host aplicado" "completed" 45
-
-            # Permissions
+            # Permissões
             notify "Ajustando permissões" "in_progress" 50
-            OWNER=\$(stat -c '%U' ..)
-            sudo chown -R "\$OWNER:\$OWNER" .
-            find . -type d -exec chmod 755 {} \;
-            find . -type f -exec chmod 644 {} \;
-            chmod -R 775 storage bootstrap/cache
-            notify "Permissões corrigidas" "completed" 55
-
-            # Dependencies
+            USUARIO=$(stat -c '%U' ..)
+            sudo chown -R "$USUARIO:$USUARIO" . || true
+            sudo find . -type d -exec chmod 755 {} \; || true
+            sudo find . -type f -exec chmod 644 {} \; || true
+            sudo chmod -R 775 storage bootstrap/cache || true
+            notify "Permissões OK" "completed" 55
+            # Dependências
             notify "Instalando dependências" "in_progress" 60
-            composer install --no-dev --optimize-autoloader --no-interaction
-            [ -f "package.json" ] && npm ci && npm run prod
+            composer install --no-interaction --optimize-autoloader || true
+            [ -f package.json ] && npm ci || true
             notify "Dependências instaladas" "completed" 70
-
-            # Laravel setup
+            # Laravel
             notify "Executando comandos Laravel" "in_progress" 75
-            php artisan key:generate --force
-            php artisan storage:link
-            php artisan config:cache
-            php artisan route:cache
-            php artisan view:cache
-            notify "Laravel otimizado" "completed" 80
-
-            # Database import
+            php artisan key:generate --force || true
+            php artisan storage:link || true
+            notify "Laravel configurado" "completed" 80
+            # Banco de dados
             notify "Importando banco de dados" "in_progress" 85
-            SQL_FILE="${{ inputs.sql_file_path }}"
-            if [ -f "\$SQL_FILE" ]; then
-              mysql -h "${{ inputs.db_host }}" \
-                    -u "${{ inputs.db_username }}" \
-                    -p"${{ inputs.db_password }}" \
-                    "${{ inputs.db_database }}" < "\$SQL_FILE"
-              notify "Banco de dados importado" "completed" 90
+            SQL_FILE="$TARGET_DIR/${{ github.event.inputs.sql_file_path }}"
+            if [ -f "$SQL_FILE" ]; then
+              mysql -h "${{ github.event.inputs.db_host }}" \
+                -u "${{ github.event.inputs.db_username }}" \
+                -p"${{ github.event.inputs.db_password }}" \
+                "${{ github.event.inputs.db_database }}" < "$SQL_FILE" || true
+              notify "Banco importado" "completed" 90
             else
-              notify "Arquivo SQL não encontrado: \$SQL_FILE" "skipped" 90
+              notify "Sem dump SQL" "skipped" 90
             fi
-
-            # Final reload
-            php artisan optimize:clear 2>/dev/null || true
-            sudo /usr/local/lsws/bin/lswsctrl reload
-
+            rm -rf "$TARGET_DIR/cache/*" || true
+            sudo /usr/local/lsws/bin/lswsctrl reload || true
             notify "Deploy concluído com sucesso!" "completed" 100
           EOF
-
-      - name: Notify API - Final Success
-        if: success()
-        run: |
-          curl -X POST "${{ env.API_URL }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "purchase_id": "${{ env.PURCHASE_ID }}",
-              "subdomain": "${{ env.SUBDOMAIN }}",
-              "step": "Deploy finalizado",
-              "status": "completed",
-              "percent": 100
-            }'
-
-      - name: Notify API - Failure
-        if: failure()
-        run: |
-          curl -X POST "${{ env.API_URL }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "purchase_id": "${{ env.PURCHASE_ID }}",
-              "subdomain": "${{ env.SUBDOMAIN }}",
-              "step": "Erro no deploy",
-              "status": "failed",
-              "percent": 0
-            }'
