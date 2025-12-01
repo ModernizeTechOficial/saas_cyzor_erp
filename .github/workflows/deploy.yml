@@ -34,7 +34,7 @@ on:
       ssh_key_name:
         description: 'Nome da chave SSH no servidor (ex: cyzor_erp)'
         required: false
-        default: 'id_ed25519'
+        default: 'cyzor_erp'
 
 jobs:
   deploy:
